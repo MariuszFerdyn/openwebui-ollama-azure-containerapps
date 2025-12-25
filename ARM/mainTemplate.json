@@ -29,25 +29,53 @@
         "description": "Container App name for Open WebUI"
       }
     },
-    "openWebuiImage": {
+    "ollamaAppName": {
       "type": "string",
-      "defaultValue": "ghcr.io/open-webui/open-webui:ollama",
+      "defaultValue": "[format('{0}-ollama', parameters('environmentName'))]",
       "metadata": {
-        "description": "Container image for Open WebUI + bundled Ollama"
+        "description": "Container App name for Ollama"
       }
     },
-    "containerCpu": {
+    "openWebuiImage": {
+      "type": "string",
+      "defaultValue": "ghcr.io/open-webui/open-webui:main",
+      "metadata": {
+        "description": "Container image for Open WebUI"
+      }
+    },
+    "ollamaImage": {
+      "type": "string",
+      "defaultValue": "ollama/ollama:latest",
+      "metadata": {
+        "description": "Container image for Ollama"
+      }
+    },
+    "webuiContainerCpu": {
       "type": "string",
       "defaultValue": "2",
       "metadata": {
-        "description": "vCPU allocated to the container (for example 0.25, 1, 2, 4)."
+        "description": "vCPU allocated to the Web UI container (for example 0.25, 1, 2, 4)."
       }
     },
-    "containerMemory": {
+    "webuiContainerMemory": {
       "type": "string",
       "defaultValue": "4Gi",
       "metadata": {
-        "description": "Memory allocated to the container. Increase if needed."
+        "description": "Memory allocated to the Web UI container. Increase if needed."
+      }
+    },
+    "ollamaContainerCpu": {
+      "type": "string",
+      "defaultValue": "2",
+      "metadata": {
+        "description": "vCPU allocated to the Ollama container (for example 0.25, 1, 2, 4)."
+      }
+    },
+    "ollamaContainerMemory": {
+      "type": "string",
+      "defaultValue": "4Gi",
+      "metadata": {
+        "description": "Memory allocated to the Ollama container. Increase if needed."
       }
     },
     "enableGpu": {
@@ -113,18 +141,32 @@
         "description": "Maximum node count for each workload profile."
       }
     },
-    "minReplicas": {
+    "webuiMinReplicas": {
       "type": "int",
-      "defaultValue": 1,
+      "defaultValue": 0,
       "metadata": {
-        "description": "Minimum replicas. Use 1 to avoid cold starts for an interactive UI."
+        "description": "Minimum replicas for Web UI. Set to 0 to scale to zero."
       }
     },
-    "maxReplicas": {
+    "webuiMaxReplicas": {
       "type": "int",
       "defaultValue": 1,
       "metadata": {
-        "description": "Maximum replicas. Keep at 1 since Open WebUI typically uses a local DB under /app/backend/data."
+        "description": "Maximum replicas for Web UI. Keep at 1 since Open WebUI typically uses a local DB under /app/backend/data."
+      }
+    },
+    "ollamaMinReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum replicas for Ollama. Set to 0 to scale to zero."
+      }
+    },
+    "ollamaMaxReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "description": "Maximum replicas for Ollama."
       }
     }
   },
@@ -140,17 +182,21 @@
       "workloadProfileType": "[parameters('gpuWorkloadProfileType')]"
     },
     "workloadProfiles": "[if(parameters('enableGpu'), createArray(variables('consumptionWorkloadProfile'), variables('gpuWorkloadProfile')), createArray(variables('consumptionWorkloadProfile')))]",
-    "containerResourcesBase": {
-      "cpu": "[json(parameters('containerCpu'))]",
-      "memory": "[parameters('containerMemory')]"
+    "webuiContainerResources": {
+      "cpu": "[json(parameters('webuiContainerCpu'))]",
+      "memory": "[parameters('webuiContainerMemory')]"
     },
-    "containerGpuConfig": {
+    "ollamaContainerResourcesBase": {
+      "cpu": "[json(parameters('ollamaContainerCpu'))]",
+      "memory": "[parameters('ollamaContainerMemory')]"
+    },
+    "ollamaContainerGpuConfig": {
       "gpu": {
         "count": "[parameters('gpuCount')]",
         "sku": "[parameters('gpuSku')]"
       }
     },
-    "containerResources": "[if(parameters('enableGpu'), union(variables('containerResourcesBase'), variables('containerGpuConfig')), variables('containerResourcesBase'))]",
+    "ollamaContainerResources": "[if(parameters('enableGpu'), union(variables('ollamaContainerResourcesBase'), variables('ollamaContainerGpuConfig')), variables('ollamaContainerResourcesBase'))]",
     "selectedWorkloadProfileName": "[if(parameters('enableGpu'), parameters('gpuWorkloadProfileName'), parameters('cpuWorkloadProfileName'))]"
   },
   "resources": [
@@ -236,7 +282,7 @@
     {
       "type": "Microsoft.App/containerApps",
       "apiVersion": "2023-11-02-preview",
-      "name": "[parameters('openWebuiAppName')]",
+      "name": "[parameters('ollamaAppName')]",
       "location": "[parameters('location')]",
       "dependsOn": [
         "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
@@ -246,6 +292,93 @@
       "properties": {
         "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
         "workloadProfileName": "[variables('selectedWorkloadProfileName')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": false,
+            "targetPort": 11434,
+            "transport": "auto",
+            "traffic": [
+              {
+                "weight": 100,
+                "latestRevision": true
+              }
+            ]
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "ollama",
+              "image": "[parameters('ollamaImage')]",
+              "env": [
+                {
+                  "name": "OLLAMA_HOST",
+                  "value": "0.0.0.0:11434"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Startup",
+                  "tcpSocket": {
+                    "port": 11434
+                  },
+                  "initialDelaySeconds": 1,
+                  "periodSeconds": 1,
+                  "timeoutSeconds": 3,
+                  "failureThreshold": 240,
+                  "successThreshold": 1
+                },
+                {
+                  "type": "Readiness",
+                  "tcpSocket": {
+                    "port": 11434
+                  },
+                  "initialDelaySeconds": 3,
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 5,
+                  "failureThreshold": 48,
+                  "successThreshold": 1
+                }
+              ],
+              "resources": "[variables('ollamaContainerResources')]",
+              "volumeMounts": [
+                {
+                  "mountPath": "/root/.ollama",
+                  "volumeName": "ollama-data"
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "ollama-data",
+              "storageName": "[variables('ollamaShareName')]",
+              "storageType": "AzureFile",
+              "mountOptions": "nobrl"
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('ollamaMinReplicas')]",
+            "maxReplicas": "[parameters('ollamaMaxReplicas')]"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2023-11-02-preview",
+      "name": "[parameters('openWebuiAppName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.App/containerApps', parameters('ollamaAppName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('webuiShareName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('ollamaShareName'))]"
+      ],
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "workloadProfileName": "[parameters('cpuWorkloadProfileName')]",
         "configuration": {
           "activeRevisionsMode": "Single",
           "ingress": {
@@ -268,7 +401,7 @@
               "env": [
                 {
                   "name": "OLLAMA_BASE_URL",
-                  "value": "http://127.0.0.1:11434"
+                  "value": "[concat('http://', parameters('ollamaAppName'), '.', reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))).defaultDomain, ':11434')]"
                 },
                 {
                   "name": "PORT",
@@ -303,7 +436,7 @@
                   "successThreshold": 1
                 }
               ],
-              "resources": "[variables('containerResources')]",
+              "resources": "[variables('webuiContainerResources')]",
               "volumeMounts": [
                 {
                   "mountPath": "/app/backend/data",
@@ -312,10 +445,6 @@
                 {
                   "mountPath": "/app/backend/data/cache",
                   "volumeName": "webui-cache"
-                },
-                {
-                  "mountPath": "/root/.ollama",
-                  "volumeName": "ollama-data"
                 }
               ]
             }
@@ -330,17 +459,11 @@
             {
               "name": "webui-cache",
               "storageType": "EmptyDir"
-            },
-            {
-              "name": "ollama-data",
-              "storageName": "[variables('ollamaShareName')]",
-              "storageType": "AzureFile",
-              "mountOptions": "nobrl"
             }
           ],
           "scale": {
-            "minReplicas": "[parameters('minReplicas')]",
-            "maxReplicas": "[parameters('maxReplicas')]"
+            "minReplicas": "[parameters('webuiMinReplicas')]",
+            "maxReplicas": "[parameters('webuiMaxReplicas')]"
           }
         }
       }
