@@ -52,14 +52,14 @@
     },
     "webuiContainerCpu": {
       "type": "string",
-      "defaultValue": "2",
+      "defaultValue": "0.5",
       "metadata": {
         "description": "vCPU allocated to the Web UI container (for example 0.25, 1, 2, 4)."
       }
     },
     "webuiContainerMemory": {
       "type": "string",
-      "defaultValue": "4Gi",
+      "defaultValue": "1Gi",
       "metadata": {
         "description": "Memory allocated to the Web UI container. Increase if needed."
       }
@@ -73,72 +73,23 @@
     },
     "ollamaContainerMemory": {
       "type": "string",
-      "defaultValue": "4Gi",
+      "defaultValue": "6Gi",
       "metadata": {
         "description": "Memory allocated to the Ollama container. Increase if needed."
       }
     },
     "enableGpu": {
       "type": "bool",
-      "defaultValue": false,
+      "defaultValue": true,
       "metadata": {
         "description": "Set to true to run on a GPU workload profile."
-      }
-    },
-    "gpuCount": {
-      "type": "int",
-      "defaultValue": 1,
-      "metadata": {
-        "description": "Number of GPUs to allocate when GPU is enabled."
-      }
-    },
-    "gpuSku": {
-      "type": "string",
-      "defaultValue": "nvidia-tesla-t4",
-      "metadata": {
-        "description": "GPU SKU for the container app. Use a SKU supported by the selected workload profile type."
-      }
-    },
-    "cpuWorkloadProfileName": {
-      "type": "string",
-      "defaultValue": "Consumption",
-      "metadata": {
-        "description": "Workload profile name for CPU workloads (default: Consumption)."
-      }
-    },
-    "cpuWorkloadProfileType": {
-      "type": "string",
-      "defaultValue": "Consumption",
-      "metadata": {
-        "description": "Workload profile type for CPU workloads (default: Consumption)."
-      }
-    },
-    "gpuWorkloadProfileName": {
-      "type": "string",
-      "defaultValue": "NC8as-T4",
-      "metadata": {
-        "description": "Workload profile name for GPU workloads (default: NC8as-T4)."
       }
     },
     "gpuWorkloadProfileType": {
       "type": "string",
       "defaultValue": "Consumption-GPU-NC8as-T4",
       "metadata": {
-        "description": "Workload profile type for GPU workloads (default: Consumption-GPU-NC8as-T4)."
-      }
-    },
-    "workloadProfileMinCount": {
-      "type": "int",
-      "defaultValue": 0,
-      "metadata": {
-        "description": "Minimum node count for each workload profile."
-      }
-    },
-    "workloadProfileMaxCount": {
-      "type": "int",
-      "defaultValue": 1,
-      "metadata": {
-        "description": "Maximum node count for each workload profile."
+        "description": "GPU workload profile type (string). Examples: Consumption-GPU-NC8as-T4 (default) or Consumption-GPU-NC24-A100."
       }
     },
     "webuiMinReplicas": {
@@ -173,12 +124,15 @@
   "variables": {
     "webuiShareName": "open-webui",
     "ollamaShareName": "open-webui-ollama",
+    "cpuWorkloadProfileName": "Consumption",
+    "cpuWorkloadProfileType": "Consumption",
+    "gpuWorkloadProfileName": "gpu",
     "consumptionWorkloadProfile": {
-      "name": "[parameters('cpuWorkloadProfileName')]",
-      "workloadProfileType": "[parameters('cpuWorkloadProfileType')]"
+      "name": "[variables('cpuWorkloadProfileName')]",
+      "workloadProfileType": "[variables('cpuWorkloadProfileType')]"
     },
     "gpuWorkloadProfile": {
-      "name": "[parameters('gpuWorkloadProfileName')]",
+      "name": "[variables('gpuWorkloadProfileName')]",
       "workloadProfileType": "[parameters('gpuWorkloadProfileType')]"
     },
     "workloadProfiles": "[if(parameters('enableGpu'), createArray(variables('consumptionWorkloadProfile'), variables('gpuWorkloadProfile')), createArray(variables('consumptionWorkloadProfile')))]",
@@ -190,14 +144,8 @@
       "cpu": "[json(parameters('ollamaContainerCpu'))]",
       "memory": "[parameters('ollamaContainerMemory')]"
     },
-    "ollamaContainerGpuConfig": {
-      "gpu": {
-        "count": "[parameters('gpuCount')]",
-        "sku": "[parameters('gpuSku')]"
-      }
-    },
-    "ollamaContainerResources": "[if(parameters('enableGpu'), union(variables('ollamaContainerResourcesBase'), variables('ollamaContainerGpuConfig')), variables('ollamaContainerResourcesBase'))]",
-    "selectedWorkloadProfileName": "[if(parameters('enableGpu'), parameters('gpuWorkloadProfileName'), parameters('cpuWorkloadProfileName'))]"
+    "ollamaContainerResources": "[variables('ollamaContainerResourcesBase')]",
+    "selectedWorkloadProfileName": "[if(parameters('enableGpu'), variables('gpuWorkloadProfileName'), variables('cpuWorkloadProfileName'))]"
   },
   "resources": [
     {
@@ -379,7 +327,7 @@
       ],
       "properties": {
         "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
-        "workloadProfileName": "[parameters('cpuWorkloadProfileName')]",
+        "workloadProfileName": "[variables('cpuWorkloadProfileName')]",
         "configuration": {
           "activeRevisionsMode": "Single",
           "ingress": {
