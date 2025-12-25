@@ -296,6 +296,7 @@
           "activeRevisionsMode": "Single",
           "ingress": {
             "external": false,
+            "allowInsecure": true,
             "targetPort": 11434,
             "transport": "auto",
             "traffic": [
@@ -401,7 +402,7 @@
               "env": [
                 {
                   "name": "OLLAMA_BASE_URL",
-                  "value": "[concat('http://', parameters('ollamaAppName'), '.', reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))).defaultDomain, ':11434')]"
+                  "value": "[concat('http://', parameters('ollamaAppName'), '.internal.', reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))).defaultDomain)]"
                 },
                 {
                   "name": "PORT",
