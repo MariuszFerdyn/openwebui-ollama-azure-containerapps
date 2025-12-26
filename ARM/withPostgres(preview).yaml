@@ -1,0 +1,614 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environmentName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Container Apps Environment"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all resources"
+      }
+    },
+    "storageAccountName": {
+      "type": "string",
+      "defaultValue": "[format('store{0}', uniqueString(resourceGroup().id))]",
+      "metadata": {
+        "description": "Storage account name (for Azure Files persistent volumes)"
+      }
+    },
+    "openWebuiAppName": {
+      "type": "string",
+      "defaultValue": "[format('{0}-openwebui', parameters('environmentName'))]",
+      "metadata": {
+        "description": "Container App name for Open WebUI"
+      }
+    },
+    "ollamaAppName": {
+      "type": "string",
+      "defaultValue": "[format('{0}-ollama', parameters('environmentName'))]",
+      "metadata": {
+        "description": "Container App name for Ollama"
+      }
+    },
+    "dbAppName": {
+      "type": "string",
+      "defaultValue": "[format('{0}-postgres', parameters('environmentName'))]",
+      "metadata": {
+        "description": "Container App name for PostgreSQL (internal-only)"
+      }
+    },
+    "openWebuiImage": {
+      "type": "string",
+      "defaultValue": "ghcr.io/open-webui/open-webui:main",
+      "metadata": {
+        "description": "Container image for Open WebUI"
+      }
+    },
+    "ollamaImage": {
+      "type": "string",
+      "defaultValue": "ollama/ollama:latest",
+      "metadata": {
+        "description": "Container image for Ollama"
+      }
+    },
+    "dbImage": {
+      "type": "string",
+      "defaultValue": "postgres:16",
+      "metadata": {
+        "description": "Container image for PostgreSQL"
+      }
+    },
+    "webuiContainerCpu": {
+      "type": "string",
+      "defaultValue": "0.5",
+      "metadata": {
+        "description": "vCPU allocated to the Web UI container (for example 0.25, 1, 2, 4)."
+      }
+    },
+    "webuiContainerMemory": {
+      "type": "string",
+      "defaultValue": "1Gi",
+      "metadata": {
+        "description": "Memory allocated to the Web UI container. Increase if needed."
+      }
+    },
+    "ollamaContainerCpu": {
+      "type": "string",
+      "defaultValue": "2",
+      "metadata": {
+        "description": "vCPU allocated to the Ollama container (for example 0.25, 1, 2, 4)."
+      }
+    },
+    "ollamaContainerMemory": {
+      "type": "string",
+      "defaultValue": "6Gi",
+      "metadata": {
+        "description": "Memory allocated to the Ollama container. Increase if needed."
+      }
+    },
+    "dbContainerCpu": {
+      "type": "string",
+      "defaultValue": "0.5",
+      "metadata": {
+        "description": "vCPU allocated to the PostgreSQL container (for example 0.25, 0.5, 1, 2)."
+      }
+    },
+    "dbContainerMemory": {
+      "type": "string",
+      "defaultValue": "1Gi",
+      "metadata": {
+        "description": "Memory allocated to the PostgreSQL container."
+      }
+    },
+    "dbName": {
+      "type": "string",
+      "defaultValue": "openwebui",
+      "metadata": {
+        "description": "PostgreSQL database name for Open WebUI"
+      }
+    },
+    "dbUser": {
+      "type": "string",
+      "defaultValue": "openwebui",
+      "metadata": {
+        "description": "PostgreSQL user for Open WebUI"
+      }
+    },
+    "dbPassword": {
+      "type": "secureString",
+      "metadata": {
+        "description": "PostgreSQL password for Open WebUI user"
+      }
+    },
+    "enableGpu": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Set to true to run on a GPU workload profile."
+      }
+    },
+    "gpuWorkloadProfileType": {
+      "type": "string",
+      "defaultValue": "Consumption-GPU-NC8as-T4",
+      "metadata": {
+        "description": "GPU workload profile type (string). Examples: Consumption-GPU-NC8as-T4 (default) or Consumption-GPU-NC24-A100."
+      }
+    },
+    "webuiMinReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum replicas for Web UI. Set to 0 to scale to zero."
+      }
+    },
+    "webuiMaxReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "description": "Maximum replicas for Web UI. With PostgreSQL configured, you can increase this if your /app/backend/data volume is shared."
+      }
+    },
+    "ollamaMinReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum replicas for Ollama. Set to 0 to scale to zero."
+      }
+    },
+    "ollamaMaxReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "description": "Maximum replicas for Ollama."
+      }
+    }
+  },
+  "variables": {
+    "webuiShareName": "open-webui",
+    "ollamaShareName": "open-webui-ollama",
+    "dbShareName": "open-webui-postgres",
+    "cpuWorkloadProfileName": "Consumption",
+    "cpuWorkloadProfileType": "Consumption",
+    "gpuWorkloadProfileName": "gpu",
+    "consumptionWorkloadProfile": {
+      "name": "[variables('cpuWorkloadProfileName')]",
+      "workloadProfileType": "[variables('cpuWorkloadProfileType')]"
+    },
+    "gpuWorkloadProfile": {
+      "name": "[variables('gpuWorkloadProfileName')]",
+      "workloadProfileType": "[parameters('gpuWorkloadProfileType')]"
+    },
+    "workloadProfiles": "[if(parameters('enableGpu'), createArray(variables('consumptionWorkloadProfile'), variables('gpuWorkloadProfile')), createArray(variables('consumptionWorkloadProfile')))]",
+    "webuiContainerResources": {
+      "cpu": "[json(parameters('webuiContainerCpu'))]",
+      "memory": "[parameters('webuiContainerMemory')]"
+    },
+    "ollamaContainerResourcesBase": {
+      "cpu": "[json(parameters('ollamaContainerCpu'))]",
+      "memory": "[parameters('ollamaContainerMemory')]"
+    },
+    "ollamaContainerResources": "[variables('ollamaContainerResourcesBase')]",
+    "dbContainerResources": {
+      "cpu": "[json(parameters('dbContainerCpu'))]",
+      "memory": "[parameters('dbContainerMemory')]"
+    },
+    "selectedWorkloadProfileName": "[if(parameters('enableGpu'), variables('gpuWorkloadProfileName'), variables('cpuWorkloadProfileName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[parameters('storageAccountName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "supportsHttpsTrafficOnly": true,
+        "minimumTlsVersion": "TLS1_2"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/default/{1}', parameters('storageAccountName'), variables('webuiShareName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/default/{1}', parameters('storageAccountName'), variables('ollamaShareName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/default/{1}', parameters('storageAccountName'), variables('dbShareName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2023-11-02-preview",
+      "name": "[parameters('environmentName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "WorkloadProfile"
+      },
+      "properties": {
+        "zoneRedundant": false,
+        "workloadProfiles": "[variables('workloadProfiles')]"
+      }
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments/storages",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', parameters('environmentName'), variables('webuiShareName'))]",
+      "properties": {
+        "azureFile": {
+          "accountName": "[parameters('storageAccountName')]",
+          "accountKey": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-01-01').keys[0].value]",
+          "shareName": "[variables('webuiShareName')]",
+          "accessMode": "ReadWrite"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', variables('webuiShareName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments/storages",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', parameters('environmentName'), variables('ollamaShareName'))]",
+      "properties": {
+        "azureFile": {
+          "accountName": "[parameters('storageAccountName')]",
+          "accountKey": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-01-01').keys[0].value]",
+          "shareName": "[variables('ollamaShareName')]",
+          "accessMode": "ReadWrite"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', variables('ollamaShareName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments/storages",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', parameters('environmentName'), variables('dbShareName'))]",
+      "properties": {
+        "azureFile": {
+          "accountName": "[parameters('storageAccountName')]",
+          "accountKey": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-01-01').keys[0].value]",
+          "shareName": "[variables('dbShareName')]",
+          "accessMode": "ReadWrite"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', variables('dbShareName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2023-11-02-preview",
+      "name": "[parameters('ollamaAppName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('webuiShareName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('ollamaShareName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('dbShareName'))]"
+      ],
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "workloadProfileName": "[variables('selectedWorkloadProfileName')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": false,
+            "allowInsecure": true,
+            "targetPort": 11434,
+            "transport": "auto",
+            "traffic": [
+              {
+                "weight": 100,
+                "latestRevision": true
+              }
+            ]
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "ollama",
+              "image": "[parameters('ollamaImage')]",
+              "env": [
+                {
+                  "name": "OLLAMA_HOST",
+                  "value": "0.0.0.0:11434"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Startup",
+                  "tcpSocket": {
+                    "port": 11434
+                  },
+                  "initialDelaySeconds": 1,
+                  "periodSeconds": 1,
+                  "timeoutSeconds": 3,
+                  "failureThreshold": 240,
+                  "successThreshold": 1
+                },
+                {
+                  "type": "Readiness",
+                  "tcpSocket": {
+                    "port": 11434
+                  },
+                  "initialDelaySeconds": 3,
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 5,
+                  "failureThreshold": 48,
+                  "successThreshold": 1
+                }
+              ],
+              "resources": "[variables('ollamaContainerResources')]",
+              "volumeMounts": [
+                {
+                  "mountPath": "/root/.ollama",
+                  "volumeName": "ollama-data"
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "ollama-data",
+              "storageName": "[variables('ollamaShareName')]",
+              "storageType": "AzureFile",
+              "mountOptions": "nobrl"
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('ollamaMinReplicas')]",
+            "maxReplicas": "[parameters('ollamaMaxReplicas')]"
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2023-11-02-preview",
+      "name": "[parameters('dbAppName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('dbShareName'))]"
+      ],
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "workloadProfileName": "[variables('cpuWorkloadProfileName')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "secrets": [
+            {
+              "name": "db-password",
+              "value": "[parameters('dbPassword')]"
+            }
+          ],
+          "ingress": {
+            "external": false,
+            "targetPort": 5432,
+            "transport": "tcp",
+            "traffic": [
+              {
+                "weight": 100,
+                "latestRevision": true
+              }
+            ]
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "postgres",
+              "image": "[parameters('dbImage')]",
+              "env": [
+                {
+                  "name": "POSTGRES_DB",
+                  "value": "[parameters('dbName')]"
+                },
+                {
+                  "name": "POSTGRES_USER",
+                  "value": "[parameters('dbUser')]"
+                },
+                {
+                  "name": "POSTGRES_PASSWORD",
+                  "secretRef": "db-password"
+                }
+              ],
+              "resources": "[variables('dbContainerResources')]",
+              "volumeMounts": [
+                {
+                  "mountPath": "/var/lib/postgresql/data",
+                  "volumeName": "postgres-data"
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "postgres-data",
+              "storageName": "[variables('dbShareName')]",
+              "storageType": "AzureFile",
+              "mountOptions": "nobrl,uid=999,gid=999,file_mode=0700,dir_mode=0700"
+            }
+          ],
+          "scale": {
+            "minReplicas": 0,
+            "maxReplicas": 1
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2023-11-02-preview",
+      "name": "[parameters('openWebuiAppName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.App/containerApps', parameters('ollamaAppName'))]",
+        "[resourceId('Microsoft.App/containerApps', parameters('dbAppName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('webuiShareName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('ollamaShareName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('dbShareName'))]"
+      ],
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "workloadProfileName": "[variables('cpuWorkloadProfileName')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "secrets": [
+            {
+              "name": "db-password",
+              "value": "[parameters('dbPassword')]"
+            }
+          ],
+          "ingress": {
+            "external": true,
+            "targetPort": 8080,
+            "transport": "auto",
+            "traffic": [
+              {
+                "weight": 100,
+                "latestRevision": true
+              }
+            ]
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "open-webui",
+              "image": "[parameters('openWebuiImage')]",
+              "env": [
+                {
+                  "name": "OLLAMA_BASE_URL",
+                  "value": "[concat('http://', parameters('ollamaAppName'), '.internal.', reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))).defaultDomain)]"
+                },
+                {
+                  "name": "DATABASE_TYPE",
+                  "value": "postgresql"
+                },
+                {
+                  "name": "DATABASE_HOST",
+                  "value": "[concat(parameters('dbAppName'), '.internal.', reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))).defaultDomain)]"
+                },
+                {
+                  "name": "DATABASE_PORT",
+                  "value": "5432"
+                },
+                {
+                  "name": "DATABASE_NAME",
+                  "value": "[parameters('dbName')]"
+                },
+                {
+                  "name": "DATABASE_USER",
+                  "value": "[parameters('dbUser')]"
+                },
+                {
+                  "name": "DATABASE_PASSWORD",
+                  "secretRef": "db-password"
+                },
+                {
+                  "name": "PORT",
+                  "value": "8080"
+                },
+                {
+                  "name": "HOST",
+                  "value": "0.0.0.0"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Startup",
+                  "tcpSocket": {
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 1,
+                  "periodSeconds": 1,
+                  "timeoutSeconds": 3,
+                  "failureThreshold": 240,
+                  "successThreshold": 1
+                },
+                {
+                  "type": "Readiness",
+                  "tcpSocket": {
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 3,
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 5,
+                  "failureThreshold": 48,
+                  "successThreshold": 1
+                }
+              ],
+              "resources": "[variables('webuiContainerResources')]",
+              "volumeMounts": [
+                {
+                  "mountPath": "/app/backend/data",
+                  "volumeName": "webui-data"
+                },
+                {
+                  "mountPath": "/app/backend/data/cache",
+                  "volumeName": "webui-cache"
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "webui-data",
+              "storageName": "[variables('webuiShareName')]",
+              "storageType": "AzureFile",
+              "mountOptions": "nobrl"
+            },
+            {
+              "name": "webui-cache",
+              "storageType": "EmptyDir"
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('webuiMinReplicas')]",
+            "maxReplicas": "[parameters('webuiMaxReplicas')]"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "openWebuiUrl": {
+      "type": "string",
+      "value": "[concat('https://', parameters('openWebuiAppName'), '.', reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))).defaultDomain)]"
+    }
+  }
+}
