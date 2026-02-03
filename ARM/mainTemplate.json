@@ -36,6 +36,13 @@
         "description": "Container App name for Ollama"
       }
     },
+    "autogenStudioAppName": {
+      "type": "string",
+      "defaultValue": "[format('{0}-autogen-studio', parameters('environmentName'))]",
+      "metadata": {
+        "description": "Container App name for AutoGen Studio"
+      }
+    },
     "openWebuiImage": {
       "type": "string",
       "defaultValue": "ghcr.io/open-webui/open-webui:main",
@@ -48,6 +55,13 @@
       "defaultValue": "ollama/ollama:latest",
       "metadata": {
         "description": "Container image for Ollama"
+      }
+    },
+    "autogenStudioImage": {
+      "type": "string",
+      "defaultValue": "python:3.13-slim",
+      "metadata": {
+        "description": "Container image for AutoGen Studio"
       }
     },
     "webuiContainerCpu": {
@@ -119,11 +133,47 @@
       "metadata": {
         "description": "Maximum replicas for Ollama."
       }
+    },
+    "deployAutogenStudio": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Set to true to deploy AutoGen Studio container app."
+      }
+    },
+    "autogenStudioMinReplicas": {
+      "type": "int",
+      "defaultValue": 0,
+      "metadata": {
+        "description": "Minimum replicas for AutoGen Studio. Set to 0 to scale to zero."
+      }
+    },
+    "autogenStudioMaxReplicas": {
+      "type": "int",
+      "defaultValue": 1,
+      "metadata": {
+        "description": "Maximum replicas for AutoGen Studio."
+      }
+    },
+    "autogenStudioContainerCpu": {
+      "type": "string",
+      "defaultValue": "1",
+      "metadata": {
+        "description": "vCPU allocated to the AutoGen Studio container."
+      }
+    },
+    "autogenStudioContainerMemory": {
+      "type": "string",
+      "defaultValue": "2Gi",
+      "metadata": {
+        "description": "Memory allocated to the AutoGen Studio container."
+      }
     }
   },
   "variables": {
     "webuiShareName": "open-webui",
     "ollamaShareName": "open-webui-ollama",
+    "autogenStudioShareName": "autogen-studio",
     "cpuWorkloadProfileName": "Consumption",
     "cpuWorkloadProfileType": "Consumption",
     "gpuWorkloadProfileName": "gpu",
@@ -145,6 +195,10 @@
       "memory": "[parameters('ollamaContainerMemory')]"
     },
     "ollamaContainerResources": "[variables('ollamaContainerResourcesBase')]",
+    "autogenStudioContainerResources": {
+      "cpu": "[json(parameters('autogenStudioContainerCpu'))]",
+      "memory": "[parameters('autogenStudioContainerMemory')]"
+    },
     "selectedWorkloadProfileName": "[if(parameters('enableGpu'), variables('gpuWorkloadProfileName'), variables('cpuWorkloadProfileName'))]"
   },
   "resources": [
@@ -174,6 +228,15 @@
       "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
       "apiVersion": "2023-01-01",
       "name": "[format('{0}/default/{1}', parameters('storageAccountName'), variables('ollamaShareName'))]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployAutogenStudio')]",
+      "type": "Microsoft.Storage/storageAccounts/fileServices/shares",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/default/{1}', parameters('storageAccountName'), variables('autogenStudioShareName'))]",
       "dependsOn": [
         "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]"
       ]
@@ -225,6 +288,25 @@
         "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', variables('ollamaShareName'))]"
+      ]
+    },
+    {
+      "condition": "[parameters('deployAutogenStudio')]",
+      "type": "Microsoft.App/managedEnvironments/storages",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}/{1}', parameters('environmentName'), variables('autogenStudioShareName'))]",
+      "properties": {
+        "azureFile": {
+          "accountName": "[parameters('storageAccountName')]",
+          "accountKey": "[listKeys(resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName')), '2023-01-01').keys[0].value]",
+          "shareName": "[variables('autogenStudioShareName')]",
+          "accessMode": "ReadWrite"
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', parameters('storageAccountName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts/fileServices/shares', parameters('storageAccountName'), 'default', variables('autogenStudioShareName'))]"
       ]
     },
     {
@@ -416,12 +498,108 @@
           }
         }
       }
+    },
+    {
+      "condition": "[parameters('deployAutogenStudio')]",
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2023-11-02-preview",
+      "name": "[parameters('autogenStudioAppName')]",
+      "location": "[parameters('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments/storages', parameters('environmentName'), variables('autogenStudioShareName'))]"
+      ],
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))]",
+        "workloadProfileName": "[variables('cpuWorkloadProfileName')]",
+        "configuration": {
+          "activeRevisionsMode": "Single",
+          "ingress": {
+            "external": true,
+            "targetPort": 8080,
+            "transport": "auto",
+            "traffic": [
+              {
+                "weight": 100,
+                "latestRevision": true
+              }
+            ]
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "autogen-studio",
+              "image": "[parameters('autogenStudioImage')]",
+              "command": [
+                "/bin/sh",
+                "-c",
+                "pip install -U autogenstudio && autogenstudio ui --host 0.0.0.0 --port 8080 --appdir /myapp"
+              ],
+              "env": [
+                {
+                  "name": "PYTHONUNBUFFERED",
+                  "value": "1"
+                }
+              ],
+              "probes": [
+                {
+                  "type": "Startup",
+                  "tcpSocket": {
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 60,
+                  "periodSeconds": 5,
+                  "timeoutSeconds": 5,
+                  "failureThreshold": 60,
+                  "successThreshold": 1
+                },
+                {
+                  "type": "Readiness",
+                  "tcpSocket": {
+                    "port": 8080
+                  },
+                  "initialDelaySeconds": 10,
+                  "periodSeconds": 10,
+                  "timeoutSeconds": 5,
+                  "failureThreshold": 30,
+                  "successThreshold": 1
+                }
+              ],
+              "resources": "[variables('autogenStudioContainerResources')]",
+              "volumeMounts": [
+                {
+                  "mountPath": "/myapp",
+                  "volumeName": "autogen-data"
+                }
+              ]
+            }
+          ],
+          "volumes": [
+            {
+              "name": "autogen-data",
+              "storageName": "[variables('autogenStudioShareName')]",
+              "storageType": "AzureFile",
+              "mountOptions": "nobrl"
+            }
+          ],
+          "scale": {
+            "minReplicas": "[parameters('autogenStudioMinReplicas')]",
+            "maxReplicas": "[parameters('autogenStudioMaxReplicas')]"
+          }
+        }
+      }
     }
   ],
   "outputs": {
     "openWebuiUrl": {
       "type": "string",
       "value": "[concat('https://', parameters('openWebuiAppName'), '.', reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))).defaultDomain)]"
+    },
+    "autogenStudioUrl": {
+      "condition": "[parameters('deployAutogenStudio')]",
+      "type": "string",
+      "value": "[concat('https://', parameters('autogenStudioAppName'), '.', reference(resourceId('Microsoft.App/managedEnvironments', parameters('environmentName'))).defaultDomain)]"
     }
   }
 }
